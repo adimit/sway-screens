@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let mut x: i32 = 0;
     for screen in setup.iter() {
         let output = &outputs[*screen];
-        con.run_command(format!("output {} enable pos {} y", output.name, x))?;
+        con.run_command(format!("output {} enable pos {} 0", output.name, x))?;
         println!(
             "{}: Set output {} with rect {}x{} to {}",
             screen, output.name, output.rect.width, output.rect.height, x
