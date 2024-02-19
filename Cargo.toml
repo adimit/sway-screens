@@ -6,5 +6,4 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.79"
 interprocess = "1.2.1"
-itertools = "0.12.1"
 swayipc = "3.0.2"

@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use swayipc;
 
 use anyhow::Result;
@@ -10,11 +9,19 @@ fn main() -> Result<()> {
     let mut con = swayipc::Connection::new()?;
     let outputs = con.get_outputs()?;
 
+    println!("Recognised screens:");
+    for (i, output) in outputs.iter().enumerate() {
+        println!(
+            "{}: {} ({}×{})",
+            i, output.name, output.rect.width, output.rect.height
+        );
+    }
+
     if setup.len() > outputs.len() {
         return Err(anyhow::anyhow!(
-            "Can't set {} outputs when we only have these: {}",
+            "Can't set {} outputs when we only have {}.",
             setup.len(),
-            outputs.into_iter().map(|o| o.name).join(", ")
+            outputs.len()
         ));
     }
 
@@ -23,16 +30,18 @@ fn main() -> Result<()> {
         let output = &outputs[*screen];
         con.run_command(format!("output {} enable pos {} 0", output.name, x))?;
         println!(
-            "{}: Set output {} with rect {}x{} to {}",
+            "{}: Setting output {} with rect {}x{} to {}.",
             screen, output.name, output.rect.width, output.rect.height, x
         );
         x += output.rect.width;
     }
 
-    for (i, output) in outputs.iter().enumerate() {
-        if !setup.contains(&i) {
-            con.run_command(format!("output {} disable", output.name))?;
-            println!("Disabling {}", output.name)
+    if setup.len() > 0 {
+        for (i, output) in outputs.iter().enumerate() {
+            if !setup.contains(&i) {
+                con.run_command(format!("output {} disable", output.name))?;
+                println!("Disabling {}.", output.name)
+            }
         }
     }
 
@@ -41,7 +50,7 @@ fn main() -> Result<()> {
 
 fn parse_setup(arg: Vec<String>) -> Result<Vec<usize>> {
     if arg.len() != 1 {
-        return Err(anyhow::anyhow!("Invalid args."));
+        return Ok(vec![]);
     }
 
     let screens = arg[0]
@@ -53,11 +62,7 @@ fn parse_setup(arg: Vec<String>) -> Result<Vec<usize>> {
         })
         .collect::<Result<Vec<usize>>>()?;
 
-    if screens.len() == 0 {
-        Ok(vec![0])
-    } else {
-        Ok(screens)
-    }
+    Ok(screens)
 }
 
 #[cfg(test)]
