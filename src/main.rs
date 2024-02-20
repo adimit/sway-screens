@@ -31,7 +31,7 @@ fn main() -> Result<()> {
     let mut con = swayipc::Connection::new()?;
     let outputs = {
         let mut o = con.get_outputs()?;
-        o.sort_by(|a, b| a.name.cmp(&b.name));
+        o.sort_by(|a, b| a.id.cmp(&b.id));
         o
     };
 
@@ -47,7 +47,7 @@ fn main() -> Result<()> {
             preferred.width,
             preferred.height,
             output.make,
-            output.model
+            output.model,
         );
     }
 
