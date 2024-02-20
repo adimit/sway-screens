@@ -59,6 +59,15 @@ fn main() -> Result<()> {
         ));
     }
 
+    if setup.len() > 0 {
+        for (i, output) in outputs.iter().enumerate() {
+            if !setup.contains(&i) {
+                con.run_command(format!("output {} disable", output.name))?;
+                println!("Disabling {}.", output.name)
+            }
+        }
+    }
+
     let mut x: i32 = 0;
     for screen in &setup {
         let output = &outputs[*screen];
@@ -68,19 +77,10 @@ fn main() -> Result<()> {
             output.name, x, preferred.width, preferred.height
         ))?;
         println!(
-            "{}: Setting output {} to {}x{} at {}.",
+            "Setting {}: output {} to {}×{} at {}.",
             screen, output.name, preferred.width, preferred.height, x
         );
         x += preferred.width;
-    }
-
-    if setup.len() > 0 {
-        for (i, output) in outputs.iter().enumerate() {
-            if !setup.contains(&i) {
-                con.run_command(format!("output {} disable", output.name))?;
-                println!("Disabling {}.", output.name)
-            }
-        }
     }
 
     Ok(())
