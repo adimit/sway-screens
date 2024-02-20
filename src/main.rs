@@ -2,18 +2,52 @@ use swayipc;
 
 use anyhow::Result;
 
+fn get_preferred(output: &swayipc::Output) -> Result<&swayipc::Mode> {
+    output
+        .modes
+        .first()
+        .ok_or(anyhow::anyhow!("Output {} has no modes", output.name))
+}
+
+fn parse_setup(arg: Vec<String>) -> Result<Vec<usize>> {
+    if arg.len() == 0 {
+        return Ok(vec![]);
+    }
+
+    arg[0]
+        .chars()
+        .map(|c| {
+            c.to_digit(10)
+                .map(|i| i as usize)
+                .ok_or(anyhow::anyhow!("char '{}' not a digit", c))
+        })
+        .collect::<Result<Vec<usize>>>()
+}
+
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<String>>();
     let setup = parse_setup(args.into_iter().skip(1).collect())?;
 
     let mut con = swayipc::Connection::new()?;
-    let outputs = con.get_outputs()?;
+    let outputs = {
+        let mut o = con.get_outputs()?;
+        o.sort_by(|a, b| a.name.cmp(&b.name));
+        o
+    };
 
     println!("Recognised screens:");
     for (i, output) in outputs.iter().enumerate() {
+        let preferred = get_preferred(output)?;
         println!(
-            "{}: {} ({}×{})",
-            i, output.name, output.rect.width, output.rect.height
+            "{}: {} ({}×{}, {}×{}) [{} {}]",
+            i,
+            output.name,
+            output.rect.width,
+            output.rect.height,
+            preferred.width,
+            preferred.height,
+            output.make,
+            output.model
         );
     }
 
@@ -26,14 +60,18 @@ fn main() -> Result<()> {
     }
 
     let mut x: i32 = 0;
-    for screen in setup.iter() {
+    for screen in &setup {
         let output = &outputs[*screen];
-        con.run_command(format!("output {} enable pos {} 0", output.name, x))?;
+        let preferred = get_preferred(output)?;
+        con.run_command(format!(
+            "output {} enable pos {} 0 res {} {}",
+            output.name, x, preferred.width, preferred.height
+        ))?;
         println!(
-            "{}: Setting output {} with rect {}x{} to {}.",
-            screen, output.name, output.rect.width, output.rect.height, x
+            "{}: Setting output {} to {}x{} at {}.",
+            screen, output.name, preferred.width, preferred.height, x
         );
-        x += output.rect.width;
+        x += preferred.width;
     }
 
     if setup.len() > 0 {
@@ -46,23 +84,6 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn parse_setup(arg: Vec<String>) -> Result<Vec<usize>> {
-    if arg.len() != 1 {
-        return Ok(vec![]);
-    }
-
-    let screens = arg[0]
-        .chars()
-        .map(|c| {
-            c.to_digit(10)
-                .map(|i| i as usize)
-                .ok_or(anyhow::anyhow!("char '{}' not a digit", c))
-        })
-        .collect::<Result<Vec<usize>>>()?;
-
-    Ok(screens)
 }
 
 #[cfg(test)]
