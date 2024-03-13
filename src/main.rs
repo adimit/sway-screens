@@ -30,8 +30,7 @@ struct Resolution {
 #[derive(Debug)]
 struct Output {
     name: String,
-    make: String,
-    model: String,
+    description: String,
     current_resolution: Resolution,
     preferred_resolution: Resolution,
     position: Position,
@@ -80,8 +79,7 @@ impl Ipc for SwayIPC {
                 let preferred_resolution = Self::get_preferred_resolution(&output);
                 Output {
                     name: output.name,
-                    make: output.make,
-                    model: output.model,
+                    description: format!("{} {}", output.make, output.model),
                     current_resolution: Resolution {
                         width: output.rect.width,
                         height: output.rect.height,
@@ -112,25 +110,32 @@ impl Ipc for SwayIPC {
     }
 }
 
+fn find_ipc() -> Result<Box<dyn Ipc>> {
+    if let Ok(_) = std::env::var("SWAYSOCK") {
+        Ok(Box::new(SwayIPC::new()?))
+    } else {
+        Err(anyhow::anyhow!("Couldn't find compositor. Make sure either SWAYSOCK or HYPRLAND_INSTANCE_SIGNATURE is set."))
+    }
+}
+
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<String>>();
     let setup = parse_setup(args.into_iter().skip(1).collect())?;
 
-    let mut ipc = SwayIPC::new()?;
+    let mut ipc = find_ipc()?;
     let outputs = ipc.get_outputs()?;
 
     println!("Recognised screens:");
     for (i, output) in outputs.iter().enumerate() {
         println!(
-            "{}: {} (current {}×{}) (preferred {}×{}) [{} {}]",
+            "{}: {} (current {}×{}) (preferred {}×{}) [{}]",
             i,
             output.name,
             output.current_resolution.width,
             output.current_resolution.height,
             output.preferred_resolution.width,
             output.preferred_resolution.height,
-            output.make,
-            output.model
+            output.description,
         );
     }
 
