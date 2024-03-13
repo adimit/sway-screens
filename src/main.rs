@@ -1,16 +1,7 @@
-use swayipc;
-
 use anyhow::Result;
 
-fn get_preferred(output: &swayipc::Output) -> Result<&swayipc::Mode> {
-    output
-        .modes
-        .first()
-        .ok_or(anyhow::anyhow!("Output {} has no modes", output.name))
-}
-
 fn parse_setup(arg: Vec<String>) -> Result<Vec<usize>> {
-    if arg.len() == 0 {
+    if arg.is_empty() {
         return Ok(vec![]);
     }
 
@@ -24,30 +15,122 @@ fn parse_setup(arg: Vec<String>) -> Result<Vec<usize>> {
         .collect::<Result<Vec<usize>>>()
 }
 
+#[derive(Debug)]
+struct Position {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Debug)]
+struct Resolution {
+    width: i32,
+    height: i32,
+}
+
+#[derive(Debug)]
+struct Output {
+    name: String,
+    make: String,
+    model: String,
+    current_resolution: Resolution,
+    preferred_resolution: Resolution,
+    position: Position,
+}
+
+trait Ipc {
+    fn get_outputs(&mut self) -> Result<Vec<Output>>;
+    fn activate_output(&mut self, output: &Output, new_position: Option<Position>) -> Result<()>;
+    fn disable_output(&mut self, output: &Output) -> Result<()>;
+}
+
+#[derive(Debug)]
+struct SwayIPC {
+    connection: swayipc::Connection,
+}
+
+impl SwayIPC {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            connection: swayipc::Connection::new()?,
+        })
+    }
+
+    fn get_preferred_resolution(output: &swayipc::Output) -> Resolution {
+        output
+            .modes
+            .first()
+            .map(|mode| Resolution {
+                width: mode.width,
+                height: mode.height,
+            })
+            .unwrap_or(Resolution {
+                width: output.rect.width,
+                height: output.rect.height,
+            })
+    }
+}
+
+impl Ipc for SwayIPC {
+    fn get_outputs(&mut self) -> Result<Vec<Output>> {
+        let mut outputs = self.connection.get_outputs()?;
+        outputs.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(outputs
+            .into_iter()
+            .map(|output| {
+                let preferred_resolution = Self::get_preferred_resolution(&output);
+                Output {
+                    name: output.name,
+                    make: output.make,
+                    model: output.model,
+                    current_resolution: Resolution {
+                        width: output.rect.width,
+                        height: output.rect.height,
+                    },
+                    preferred_resolution,
+                    position: Position {
+                        x: output.rect.x,
+                        y: output.rect.y,
+                    },
+                }
+            })
+            .collect())
+    }
+
+    fn activate_output(&mut self, output: &Output, new_position: Option<Position>) -> Result<()> {
+        let position = new_position.as_ref().unwrap_or(&output.position);
+        self.connection.run_command(format!(
+            "output {} enable pos {} {}",
+            output.name, position.x, position.y
+        ))?;
+        Ok(())
+    }
+
+    fn disable_output(&mut self, output: &Output) -> Result<()> {
+        self.connection
+            .run_command(format!("output {} disable", output.name))?;
+        Ok(())
+    }
+}
+
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<String>>();
     let setup = parse_setup(args.into_iter().skip(1).collect())?;
 
-    let mut con = swayipc::Connection::new()?;
-    let outputs = {
-        let mut o = con.get_outputs()?;
-        o.sort_by(|a, b| a.id.cmp(&b.id));
-        o
-    };
+    let mut ipc = SwayIPC::new()?;
+    let outputs = ipc.get_outputs()?;
 
     println!("Recognised screens:");
     for (i, output) in outputs.iter().enumerate() {
-        let preferred = get_preferred(output)?;
         println!(
-            "{}: {} ({}×{}, {}×{}) [{} {}]",
+            "{}: {} (current {}×{}) (preferred {}×{}) [{} {}]",
             i,
             output.name,
-            output.rect.width,
-            output.rect.height,
-            preferred.width,
-            preferred.height,
+            output.current_resolution.width,
+            output.current_resolution.height,
+            output.preferred_resolution.width,
+            output.preferred_resolution.height,
             output.make,
-            output.model,
+            output.model
         );
     }
 
@@ -59,28 +142,28 @@ fn main() -> Result<()> {
         ));
     }
 
-    if setup.len() > 0 {
+    if !setup.is_empty() {
         for (i, output) in outputs.iter().enumerate() {
             if !setup.contains(&i) {
-                con.run_command(format!("output {} disable", output.name))?;
-                println!("Disabling {}.", output.name)
+                println!("Disabling {}.", output.name);
+                ipc.disable_output(output)?;
             }
         }
     }
 
     let mut x: i32 = 0;
-    for screen in &setup {
+    for screen in setup.iter() {
         let output = &outputs[*screen];
-        let preferred = get_preferred(output)?;
-        con.run_command(format!(
-            "output {} enable pos {} 0 res {} {}",
-            output.name, x, preferred.width, preferred.height
-        ))?;
+        ipc.activate_output(output, Some(Position { x, y: 0 }))?;
         println!(
-            "Setting {}: output {} to {}×{} at {}.",
-            screen, output.name, preferred.width, preferred.height, x
+            "{}: Setting output {} with rect {}x{} to {}.",
+            screen,
+            output.name,
+            output.preferred_resolution.width,
+            output.preferred_resolution.height,
+            x
         );
-        x += preferred.width;
+        x += output.preferred_resolution.width;
     }
 
     Ok(())
