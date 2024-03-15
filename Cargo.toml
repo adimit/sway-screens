@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.79"
+colored = "2.1.0"
 fxhash = "0.2.1"
 hyprland = "0.3.13"
 interprocess = "1.2.1"

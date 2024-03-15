@@ -1,8 +1,8 @@
+#![allow(unused)]
 use std::{
     collections::HashMap,
     fmt::{self, Debug},
     hash::BuildHasherDefault,
-    path::Display,
 };
 
 use anyhow::Result;
@@ -13,7 +13,8 @@ use wayland_client::{
     backend::ObjectId, event_created_child, protocol::wl_registry, Dispatch, Proxy,
 };
 use wayland_protocols_wlr::output_management::v1::client::{
-    zwlr_output_head_v1::ZwlrOutputHeadV1, zwlr_output_manager_v1::ZwlrOutputManagerV1,
+    zwlr_output_head_v1::ZwlrOutputHeadV1,
+    zwlr_output_manager_v1::{ZwlrOutputManagerV1, EVT_HEAD_OPCODE},
     zwlr_output_mode_v1::ZwlrOutputModeV1,
 };
 
@@ -32,13 +33,13 @@ fn parse_setup(arg: Vec<String>) -> Result<Vec<usize>> {
         .collect::<Result<Vec<usize>>>()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Position {
     x: i32,
     y: i32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Resolution {
     width: i32,
     height: i32,
@@ -53,10 +54,11 @@ struct Output {
     position: Position,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 struct Mode {
     resolution: Resolution,
     refresh: i32,
+    preferred: bool,
 }
 
 #[derive(Debug)]
@@ -68,6 +70,7 @@ struct NewOutput {
     preferred_mode: Option<Mode>,
     modes: Vec<Mode>,
     position: Option<Position>,
+    scale: f64,
 }
 
 trait Ipc {
@@ -145,13 +148,7 @@ impl Ipc for SwayIPC {
 }
 
 fn find_ipc() -> Result<Box<dyn Ipc>> {
-    if let Ok(_) = std::env::var("SWAYSOCK") {
-        Ok(Box::new(SwayIPC::new()?))
-    } else if let Ok(_) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
-        Ok(Box::new(HyprlandIpc::new()))
-    } else {
-        Err(anyhow::anyhow!("Couldn't find compositor. Make sure either SWAYSOCK or HYPRLAND_INSTANCE_SIGNATURE is set."))
-    }
+    Ok(Box::new(SwayIPC::new()?))
 }
 
 struct HyprlandIpc {}
@@ -199,7 +196,54 @@ impl Ipc for HyprlandIpc {
 struct State {
     running: bool,
     outputs: HashMap<ObjectId, NewOutput, BuildHasherDefault<FxHasher>>,
+    modes: HashMap<ObjectId, Mode, BuildHasherDefault<FxHasher>>,
+    output_to_modes: HashMap<ObjectId, Vec<ObjectId>, BuildHasherDefault<FxHasher>>,
+    outputs_current_mode: HashMap<ObjectId, ObjectId, BuildHasherDefault<FxHasher>>,
     capabilities: Vec<String>,
+    finalised_output: Vec<NewOutput>,
+}
+impl State {
+    fn finalise(&mut self) -> () {
+        self.running = false;
+        self.finalised_output = self
+            .outputs
+            .iter()
+            .map(|(id, output)| self.finalise_output(id, output))
+            .collect();
+    }
+
+    fn finalise_output(&self, id: &ObjectId, output: &NewOutput) -> NewOutput {
+        let modes = self.find_modes_for_output(&id);
+        NewOutput {
+            name: output.name.clone(),
+            enabled: output.enabled,
+            description: output.description.clone(),
+            current_mode: self.find_current_mode(&id),
+            preferred_mode: modes.iter().find(|mode| mode.preferred).cloned(),
+            modes,
+            position: output.position.clone(),
+            scale: output.scale,
+        }
+    }
+
+    fn find_current_mode(&self, id: &ObjectId) -> Option<Mode> {
+        self.outputs_current_mode
+            .get(&id)
+            .and_then(|mode_id| self.modes.get(mode_id).cloned())
+    }
+
+    fn find_modes_for_output(&self, id: &ObjectId) -> Vec<Mode> {
+        self.output_to_modes
+            .get(&id)
+            .map(|modes| {
+                modes
+                    .iter()
+                    .filter_map(|mode_id| self.modes.get(mode_id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
@@ -248,17 +292,19 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for State {
                     enabled: false,
                     current_mode: None,
                     preferred_mode: None,
+                    scale: 1.0,
                 },
             );
+            state.output_to_modes.insert(head.id(), Vec::new());
         } else if let Event::Done { serial } = event {
             trace!("Output manager done. {}", serial);
-            state.running = false;
+            state.finalise();
         } else {
             warn!("Output manager ignored {:?}", event);
         }
     }
     event_created_child!(State, ZwlrOutputManagerV1, [
-        EVT_HEAD_OPCODE=> (ZwlrOutputHeadV1, ()),
+        EVT_HEAD_OPCODE => (ZwlrOutputHeadV1, ()),
     ]);
 }
 
@@ -277,22 +323,56 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for State {
                 output.name = name;
             });
             if new_output.is_none() {
-                warn!("Unknow head {:?}", proxy.id());
+                warn!("Unknown head {:?}", proxy.id());
             }
         } else if let Event::Enabled { enabled } = event {
             let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
                 output.enabled = enabled == 1;
             });
             if new_output.is_none() {
-                warn!("Unknow head {:?}", proxy.id());
+                warn!("Unknown head {:?}", proxy.id());
             }
         } else if let Event::Description { description } = event {
             let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
                 output.description = description;
             });
             if new_output.is_none() {
-                warn!("Unknow head {:?}", proxy.id());
+                warn!("Unknown head {:?}", proxy.id());
             }
+        } else if let Event::Scale { scale } = event {
+            let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
+                output.scale = scale;
+            });
+            if new_output.is_none() {
+                warn!("Unknown head {:?}", proxy.id());
+            }
+        } else if let Event::Position { x, y } = event {
+            let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
+                output.position = Some(Position { x, y });
+            });
+            if new_output.is_none() {
+                warn!("Unknown head {:?}", proxy.id());
+            }
+        } else if let Event::Mode { mode } = event {
+            state.modes.insert(
+                mode.id(),
+                Mode {
+                    resolution: Resolution {
+                        width: 0,
+                        height: 0,
+                    },
+                    refresh: 0,
+                    preferred: false,
+                },
+            );
+            let new_mode = state.output_to_modes.get_mut(&proxy.id()).map(|modes| {
+                modes.push(mode.id());
+            });
+            if new_mode.is_none() {
+                warn!("Unknown head in mode assignment {:?}", proxy.id());
+            }
+        } else if let Event::CurrentMode { mode } = event {
+            state.outputs_current_mode.insert(proxy.id(), mode.id());
         } else {
             debug!("Output head ignoring event {:?}", event);
         }
@@ -311,7 +391,32 @@ impl Dispatch<ZwlrOutputModeV1, ()> for State {
         conn: &wayland_client::Connection,
         qhandle: &wayland_client::QueueHandle<Self>,
     ) {
-        debug!("Mode ignoring event {:?}", event);
+        use wayland_protocols_wlr::output_management::v1::client::zwlr_output_mode_v1::Event;
+        if let Event::Size { width, height } = event {
+            let new_mode = state.modes.get_mut(&proxy.id()).map(|mode| {
+                mode.resolution = Resolution { width, height };
+            });
+            if new_mode.is_none() {
+                warn!("Unknown mode {:?}", proxy.id());
+            }
+        } else if let Event::Refresh { refresh } = event {
+            let new_mode = state.modes.get_mut(&proxy.id()).map(|mode| {
+                mode.refresh = refresh;
+            });
+            if new_mode.is_none() {
+                warn!("Unknown mode {:?}", proxy.id());
+            }
+        } else if let Event::Preferred = event {
+            let new_mode = state
+                .modes
+                .get_mut(&proxy.id())
+                .map(|mode| mode.preferred = true);
+            if new_mode.is_none() {
+                warn!("Unknown mode {:?}", proxy.id());
+            }
+        } else {
+            debug!("Mode ignoring event {:?}, {:?}", event, proxy.id());
+        }
     }
 }
 
@@ -319,13 +424,52 @@ type OutputHashMap = FxHashMap<ObjectId, NewOutput>;
 
 impl fmt::Display for NewOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.enabled {
-            write!(f, "*")?;
-        } else {
-            write!(f, " ")?;
+        use colored::Colorize;
+        let indicator = {
+            if self.enabled {
+                "⚫".bright_blue()
+            } else {
+                "⚪".red()
+            }
+        };
+        write!(f, "{}", indicator)?;
+        write!(f, "{}", self.name)?;
+        if (self.scale - 1.0).abs() > f64::EPSILON {
+            write!(f, " (×{:.2})", self.scale)?;
         }
-        write!(f, "{} ", self.name)?;
-        write!(f, "[{}]", self.description)?;
+        if let Some(current_mode) = &self.current_mode {
+            write!(f, " {}", current_mode)?;
+        }
+        if let Some(position) = &self.position {
+            if position.x != 0 || position.y != 0 {
+                write!(f, " +{},{}", position.x, position.y)?;
+            }
+        }
+        write!(f, ", {} modes", self.modes.len())?;
+        write!(f, " [{}]", self.description)?;
+        Ok(())
+    }
+}
+
+impl fmt::Display for Resolution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}×{}", self.width, self.height)
+    }
+}
+
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use colored::Colorize;
+        write!(f, "{}", self.resolution)?;
+        if self.refresh != 0 {
+            write!(f, "@{:.2}kHz", (self.refresh as f64 / 1000.0))?;
+        }
+        let heart = if self.preferred {
+            "♥".green()
+        } else {
+            " ".clear()
+        };
+        write!(f, "{}", heart)?;
         Ok(())
     }
 }
@@ -339,14 +483,18 @@ fn main() -> Result<()> {
     let _registry = display.get_registry(&qh, ());
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::WARN)
             .finish(),
     )?;
 
     let mut state = State {
         running: true,
-        outputs: OutputHashMap::default(),
+        outputs: FxHashMap::default(),
         capabilities: Vec::new(),
+        output_to_modes: FxHashMap::default(),
+        modes: FxHashMap::default(),
+        outputs_current_mode: FxHashMap::default(),
+        finalised_output: Vec::new(),
     };
     while state.running {
         q.blocking_dispatch(&mut state)?;
@@ -357,9 +505,14 @@ fn main() -> Result<()> {
         state.capabilities
     );
 
-    info!("Found {} outputs.", state.outputs.len());
-    for (i, (_id, output)) in state.outputs.iter().enumerate() {
+    info!("Found {} outputs.", state.finalised_output.len());
+    for (i, output) in state.finalised_output.iter().enumerate() {
         println!("{}: {}", i, output);
+        /*
+        for (j, mode) in output.modes.iter().enumerate() {
+            println!("  {}: {}", j, mode);
+        }
+        */
     }
 
     Ok(())
