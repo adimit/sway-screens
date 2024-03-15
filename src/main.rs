@@ -47,7 +47,7 @@ struct Mode {
 }
 
 #[derive(Debug)]
-struct NewOutput {
+struct Output {
     name: String,
     enabled: bool,
     description: String,
@@ -61,15 +61,16 @@ struct NewOutput {
 #[derive(Debug)]
 struct OutputQueryState {
     running: bool,
-    outputs: FxHashMap<ObjectId, NewOutput>,
+    outputs: FxHashMap<ObjectId, Output>,
     modes: FxHashMap<ObjectId, Mode>,
     output_to_modes: FxHashMap<ObjectId, Vec<ObjectId>>,
     outputs_current_mode: FxHashMap<ObjectId, ObjectId>,
     capabilities: Vec<String>,
-    finalised_output: Vec<NewOutput>,
+    finalised_output: Vec<Output>,
 }
+
 impl OutputQueryState {
-    fn finalise(&mut self) -> () {
+    fn finalise(&mut self) {
         self.running = false;
         self.finalised_output = self
             .outputs
@@ -78,29 +79,29 @@ impl OutputQueryState {
             .collect();
     }
 
-    fn finalise_output(&self, id: &ObjectId, output: &NewOutput) -> NewOutput {
-        let modes = self.find_modes_for_output(&id);
-        NewOutput {
+    fn finalise_output(&self, id: &ObjectId, output: &Output) -> Output {
+        let modes = self.find_modes_for_output(id);
+        Output {
             name: output.name.clone(),
             enabled: output.enabled,
             description: output.description.clone(),
-            current_mode: self.find_current_mode(&id),
+            current_mode: self.find_current_mode(id),
             preferred_mode: modes.iter().find(|mode| mode.preferred).cloned(),
             modes,
-            position: output.position.clone(),
+            position: output.position,
             scale: output.scale,
         }
     }
 
     fn find_current_mode(&self, id: &ObjectId) -> Option<Mode> {
         self.outputs_current_mode
-            .get(&id)
+            .get(id)
             .and_then(|mode_id| self.modes.get(mode_id).cloned())
     }
 
     fn find_modes_for_output(&self, id: &ObjectId) -> Vec<Mode> {
         self.output_to_modes
-            .get(&id)
+            .get(id)
             .map(|modes| {
                 modes
                     .iter()
@@ -148,7 +149,7 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for OutputQueryState {
             info!("Output manager found head {:?}.", head);
             state.outputs.insert(
                 head.id(),
-                NewOutput {
+                Output {
                     name: "unknown".into(),
                     description: String::new(),
                     position: None,
@@ -284,7 +285,7 @@ impl Dispatch<ZwlrOutputModeV1, ()> for OutputQueryState {
     }
 }
 
-impl fmt::Display for NewOutput {
+impl fmt::Display for Output {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use colored::Colorize;
         let indicator = {
@@ -337,9 +338,9 @@ impl fmt::Display for Mode {
 }
 
 trait OutputManager {
-    fn get_outputs(&self) -> Result<Vec<NewOutput>>;
-    fn enable_output(&self, output: &NewOutput, position: &Position) -> Result<()>;
-    fn disable_output(&self, output: &NewOutput) -> Result<()>;
+    fn get_outputs(&self) -> Result<Vec<Output>>;
+    fn enable_output(&self, output: &Output, position: &Position) -> Result<()>;
+    fn disable_output(&self, output: &Output) -> Result<()>;
 }
 
 struct WlrOutputManager {
@@ -355,7 +356,7 @@ impl WlrOutputManager {
 }
 
 impl OutputManager for WlrOutputManager {
-    fn get_outputs(&self) -> Result<Vec<NewOutput>> {
+    fn get_outputs(&self) -> Result<Vec<Output>> {
         let display = self.connection.display();
         let mut q = self.connection.new_event_queue::<OutputQueryState>();
         let qh = q.handle();
@@ -384,7 +385,7 @@ impl OutputManager for WlrOutputManager {
         Ok(state.finalised_output)
     }
 
-    fn enable_output(&self, output: &NewOutput, position: &Position) -> Result<()> {
+    fn enable_output(&self, output: &Output, position: &Position) -> Result<()> {
         warn!(
             "NYI: Enabling output {} at position {:?}.",
             output, position
@@ -392,7 +393,7 @@ impl OutputManager for WlrOutputManager {
         Ok(())
     }
 
-    fn disable_output(&self, output: &NewOutput) -> Result<()> {
+    fn disable_output(&self, output: &Output) -> Result<()> {
         warn!("NYI: Disabling output {}", output);
         Ok(())
     }
@@ -436,9 +437,9 @@ fn main() -> Result<()> {
     let mut x: i32 = 0;
     for screen in setup.iter() {
         let output = &outputs[*screen];
-        output.preferred_mode.or(output.current_mode).map(|mode| {
-            x += mode.resolution.width;
-        });
+        if let Some(mode) = output.preferred_mode.or(output.current_mode) {
+            x = mode.resolution.width;
+        }
         man.enable_output(output, &Position { x, y: 0 })?;
     }
 
