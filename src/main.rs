@@ -1,13 +1,7 @@
-#![allow(unused)]
-use std::{
-    collections::HashMap,
-    fmt::{self, Debug},
-    hash::BuildHasherDefault,
-};
+use std::fmt::{self, Debug};
 
 use anyhow::Result;
-use fxhash::{FxHashMap, FxHasher};
-use hyprland::shared::HyprData;
+use fxhash::FxHashMap;
 use tracing::{debug, info, trace, warn};
 use wayland_client::{
     backend::ObjectId, event_created_child, protocol::wl_registry, Dispatch, Proxy,
@@ -45,15 +39,6 @@ struct Resolution {
     height: i32,
 }
 
-#[derive(Debug)]
-struct Output {
-    name: String,
-    description: String,
-    current_resolution: Resolution,
-    preferred_resolution: Resolution,
-    position: Position,
-}
-
 #[derive(Debug, Copy, Clone)]
 struct Mode {
     resolution: Resolution,
@@ -73,136 +58,17 @@ struct NewOutput {
     scale: f64,
 }
 
-trait Ipc {
-    fn get_outputs(&mut self) -> Result<Vec<Output>>;
-    fn activate_output(&mut self, output: &Output, new_position: Option<Position>) -> Result<()>;
-    fn disable_output(&mut self, output: &Output) -> Result<()>;
-}
-
 #[derive(Debug)]
-struct SwayIPC {
-    connection: swayipc::Connection,
-}
-
-impl SwayIPC {
-    fn new() -> Result<Self> {
-        Ok(Self {
-            connection: swayipc::Connection::new()?,
-        })
-    }
-
-    fn get_preferred_resolution(output: &swayipc::Output) -> Resolution {
-        output
-            .modes
-            .first()
-            .map(|mode| Resolution {
-                width: mode.width,
-                height: mode.height,
-            })
-            .unwrap_or(Resolution {
-                width: output.rect.width,
-                height: output.rect.height,
-            })
-    }
-}
-
-impl Ipc for SwayIPC {
-    fn get_outputs(&mut self) -> Result<Vec<Output>> {
-        let mut outputs = self.connection.get_outputs()?;
-        outputs.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(outputs
-            .into_iter()
-            .map(|output| {
-                let preferred_resolution = Self::get_preferred_resolution(&output);
-                Output {
-                    name: output.name,
-                    description: format!("{} {}", output.make, output.model),
-                    current_resolution: Resolution {
-                        width: output.rect.width,
-                        height: output.rect.height,
-                    },
-                    preferred_resolution,
-                    position: Position {
-                        x: output.rect.x,
-                        y: output.rect.y,
-                    },
-                }
-            })
-            .collect())
-    }
-
-    fn activate_output(&mut self, output: &Output, new_position: Option<Position>) -> Result<()> {
-        let position = new_position.as_ref().unwrap_or(&output.position);
-        self.connection.run_command(format!(
-            "output {} enable pos {} {}",
-            output.name, position.x, position.y
-        ))?;
-        Ok(())
-    }
-
-    fn disable_output(&mut self, output: &Output) -> Result<()> {
-        self.connection
-            .run_command(format!("output {} disable", output.name))?;
-        Ok(())
-    }
-}
-
-fn find_ipc() -> Result<Box<dyn Ipc>> {
-    Ok(Box::new(SwayIPC::new()?))
-}
-
-struct HyprlandIpc {}
-
-impl HyprlandIpc {
-    fn new() -> Self {
-        HyprlandIpc {}
-    }
-}
-
-impl Ipc for HyprlandIpc {
-    fn get_outputs(&mut self) -> Result<Vec<Output>> {
-        let monitors = hyprland::data::Monitors::get()?;
-        Ok(monitors
-            .into_iter()
-            .map(|monitor| Output {
-                name: monitor.name,
-                description: monitor.description,
-                current_resolution: Resolution {
-                    height: monitor.height as i32,
-                    width: monitor.width as i32,
-                },
-                preferred_resolution: Resolution {
-                    height: monitor.height as i32,
-                    width: monitor.width as i32,
-                },
-                position: Position {
-                    x: monitor.x,
-                    y: monitor.y,
-                },
-            })
-            .collect())
-    }
-
-    fn activate_output(&mut self, output: &Output, new_position: Option<Position>) -> Result<()> {
-        todo!()
-    }
-
-    fn disable_output(&mut self, output: &Output) -> Result<()> {
-        todo!()
-    }
-}
-
-#[derive(Debug)]
-struct State {
+struct OutputQueryState {
     running: bool,
-    outputs: HashMap<ObjectId, NewOutput, BuildHasherDefault<FxHasher>>,
-    modes: HashMap<ObjectId, Mode, BuildHasherDefault<FxHasher>>,
-    output_to_modes: HashMap<ObjectId, Vec<ObjectId>, BuildHasherDefault<FxHasher>>,
-    outputs_current_mode: HashMap<ObjectId, ObjectId, BuildHasherDefault<FxHasher>>,
+    outputs: FxHashMap<ObjectId, NewOutput>,
+    modes: FxHashMap<ObjectId, Mode>,
+    output_to_modes: FxHashMap<ObjectId, Vec<ObjectId>>,
+    outputs_current_mode: FxHashMap<ObjectId, ObjectId>,
     capabilities: Vec<String>,
     finalised_output: Vec<NewOutput>,
 }
-impl State {
+impl OutputQueryState {
     fn finalise(&mut self) -> () {
         self.running = false;
         self.finalised_output = self
@@ -246,19 +112,17 @@ impl State {
     }
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for State {
+impl Dispatch<wl_registry::WlRegistry, ()> for OutputQueryState {
     fn event(
         state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: <wl_registry::WlRegistry as wayland_client::Proxy>::Event,
-        data: &(),
-        conn: &wayland_client::Connection,
+        _data: &(),
+        _conn: &wayland_client::Connection,
         qhandle: &wayland_client::QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
+            name, interface, ..
         } = event
         {
             state.capabilities.push(interface.clone());
@@ -270,14 +134,14 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
     }
 }
 
-impl Dispatch<ZwlrOutputManagerV1, ()> for State {
+impl Dispatch<ZwlrOutputManagerV1, ()> for OutputQueryState {
     fn event(
         state: &mut Self,
-        proxy: &ZwlrOutputManagerV1,
+        _proxy: &ZwlrOutputManagerV1,
         event: <ZwlrOutputManagerV1 as Proxy>::Event,
-        data: &(),
-        conn: &wayland_client::Connection,
-        qhandle: &wayland_client::QueueHandle<Self>,
+        _data: &(),
+        _conn: &wayland_client::Connection,
+        _qhandle: &wayland_client::QueueHandle<Self>,
     ) {
         use wayland_protocols_wlr::output_management::v1::client::zwlr_output_manager_v1::Event;
         if let Event::Head { head } = event {
@@ -303,19 +167,19 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for State {
             warn!("Output manager ignored {:?}", event);
         }
     }
-    event_created_child!(State, ZwlrOutputManagerV1, [
+    event_created_child!(OutputQueryState, ZwlrOutputManagerV1, [
         EVT_HEAD_OPCODE => (ZwlrOutputHeadV1, ()),
     ]);
 }
 
-impl Dispatch<ZwlrOutputHeadV1, ()> for State {
+impl Dispatch<ZwlrOutputHeadV1, ()> for OutputQueryState {
     fn event(
         state: &mut Self,
         proxy: &ZwlrOutputHeadV1,
         event: <ZwlrOutputHeadV1 as Proxy>::Event,
-        data: &(),
-        conn: &wayland_client::Connection,
-        qhandle: &wayland_client::QueueHandle<Self>,
+        _data: &(),
+        _conn: &wayland_client::Connection,
+        _qhandle: &wayland_client::QueueHandle<Self>,
     ) {
         use wayland_protocols_wlr::output_management::v1::client::zwlr_output_head_v1::Event;
         if let Event::Name { name } = event {
@@ -377,19 +241,19 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for State {
             debug!("Output head ignoring event {:?}", event);
         }
     }
-    event_created_child!(State, ZwlrOutputManagerV1, [
+    event_created_child!(OutputQueryState, ZwlrOutputManagerV1, [
         3 => (ZwlrOutputModeV1, ()),
     ]);
 }
 
-impl Dispatch<ZwlrOutputModeV1, ()> for State {
+impl Dispatch<ZwlrOutputModeV1, ()> for OutputQueryState {
     fn event(
         state: &mut Self,
         proxy: &ZwlrOutputModeV1,
         event: <ZwlrOutputModeV1 as Proxy>::Event,
-        data: &(),
-        conn: &wayland_client::Connection,
-        qhandle: &wayland_client::QueueHandle<Self>,
+        _data: &(),
+        _conn: &wayland_client::Connection,
+        _qhandle: &wayland_client::QueueHandle<Self>,
     ) {
         use wayland_protocols_wlr::output_management::v1::client::zwlr_output_mode_v1::Event;
         if let Event::Size { width, height } = event {
@@ -419,8 +283,6 @@ impl Dispatch<ZwlrOutputModeV1, ()> for State {
         }
     }
 }
-
-type OutputHashMap = FxHashMap<ObjectId, NewOutput>;
 
 impl fmt::Display for NewOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -474,69 +336,84 @@ impl fmt::Display for Mode {
     }
 }
 
+trait OutputManager {
+    fn get_outputs(&self) -> Result<Vec<NewOutput>>;
+    fn enable_output(&self, output: &NewOutput, position: &Position) -> Result<()>;
+    fn disable_output(&self, output: &NewOutput) -> Result<()>;
+}
+
+struct WlrOutputManager {
+    connection: wayland_client::Connection,
+}
+
+impl WlrOutputManager {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            connection: wayland_client::Connection::connect_to_env()?,
+        })
+    }
+}
+
+impl OutputManager for WlrOutputManager {
+    fn get_outputs(&self) -> Result<Vec<NewOutput>> {
+        let display = self.connection.display();
+        let mut q = self.connection.new_event_queue::<OutputQueryState>();
+        let qh = q.handle();
+        let _registry = display.get_registry(&qh, ());
+
+        let mut state = OutputQueryState {
+            running: true,
+            outputs: FxHashMap::default(),
+            capabilities: Vec::new(),
+            output_to_modes: FxHashMap::default(),
+            modes: FxHashMap::default(),
+            outputs_current_mode: FxHashMap::default(),
+            finalised_output: Vec::new(),
+        };
+        while state.running {
+            q.blocking_dispatch(&mut state)?;
+        }
+
+        trace!(
+            "Server has following unused capabilities: {:?}",
+            state.capabilities
+        );
+
+        info!("Found {} outputs.", state.finalised_output.len());
+
+        Ok(state.finalised_output)
+    }
+
+    fn enable_output(&self, output: &NewOutput, position: &Position) -> Result<()> {
+        warn!(
+            "NYI: Enabling output {} at position {:?}.",
+            output, position
+        );
+        Ok(())
+    }
+
+    fn disable_output(&self, output: &NewOutput) -> Result<()> {
+        warn!("NYI: Disabling output {}", output);
+        Ok(())
+    }
+}
+
 fn main() -> Result<()> {
-    let connection = wayland_client::Connection::connect_to_env()?;
-    // get outputs from connection
-    let display = connection.display();
-    let mut q = connection.new_event_queue::<State>();
-    let qh = q.handle();
-    let _registry = display.get_registry(&qh, ());
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
             .with_max_level(tracing::Level::WARN)
             .finish(),
     )?;
 
-    let mut state = State {
-        running: true,
-        outputs: FxHashMap::default(),
-        capabilities: Vec::new(),
-        output_to_modes: FxHashMap::default(),
-        modes: FxHashMap::default(),
-        outputs_current_mode: FxHashMap::default(),
-        finalised_output: Vec::new(),
-    };
-    while state.running {
-        q.blocking_dispatch(&mut state)?;
-    }
-
-    trace!(
-        "Server has following unused capabilities: {:?}",
-        state.capabilities
-    );
-
-    info!("Found {} outputs.", state.finalised_output.len());
-    for (i, output) in state.finalised_output.iter().enumerate() {
-        println!("{}: {}", i, output);
-        /*
-        for (j, mode) in output.modes.iter().enumerate() {
-            println!("  {}: {}", j, mode);
-        }
-        */
-    }
-
-    Ok(())
-}
-
-fn old_main() -> Result<()> {
     let args = std::env::args().collect::<Vec<String>>();
     let setup = parse_setup(args.into_iter().skip(1).collect())?;
 
-    let mut ipc = find_ipc()?;
-    let outputs = ipc.get_outputs()?;
+    let man = WlrOutputManager::new()?;
+    let outputs = man.get_outputs()?;
 
     println!("Recognised screens:");
     for (i, output) in outputs.iter().enumerate() {
-        println!(
-            "{}: {} (current {}×{}) (preferred {}×{}) [{}]",
-            i,
-            output.name,
-            output.current_resolution.width,
-            output.current_resolution.height,
-            output.preferred_resolution.width,
-            output.preferred_resolution.height,
-            output.description,
-        );
+        println!("{}: {}", i, output);
     }
 
     if setup.len() > outputs.len() {
@@ -551,7 +428,7 @@ fn old_main() -> Result<()> {
         for (i, output) in outputs.iter().enumerate() {
             if !setup.contains(&i) {
                 println!("Disabling {}.", output.name);
-                ipc.disable_output(output)?;
+                man.disable_output(output)?;
             }
         }
     }
@@ -559,16 +436,10 @@ fn old_main() -> Result<()> {
     let mut x: i32 = 0;
     for screen in setup.iter() {
         let output = &outputs[*screen];
-        ipc.activate_output(output, Some(Position { x, y: 0 }))?;
-        println!(
-            "{}: Setting output {} with rect {}x{} to {}.",
-            screen,
-            output.name,
-            output.preferred_resolution.width,
-            output.preferred_resolution.height,
-            x
-        );
-        x += output.preferred_resolution.width;
+        output.preferred_mode.or(output.current_mode).map(|mode| {
+            x += mode.resolution.width;
+        });
+        man.enable_output(output, &Position { x, y: 0 })?;
     }
 
     Ok(())
