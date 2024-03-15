@@ -427,9 +427,9 @@ impl fmt::Display for NewOutput {
         use colored::Colorize;
         let indicator = {
             if self.enabled {
-                "⚫".bright_blue()
+                "⯀ ".bright_green()
             } else {
-                "⚪".red()
+                "⮽ ".red()
             }
         };
         write!(f, "{}", indicator)?;
