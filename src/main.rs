@@ -1,4 +1,17 @@
 use anyhow::Result;
+use hyprland::shared::HyprData;
+use wayland_client::{
+    event_created_child,
+    protocol::{
+        wl_output::{self, WlOutput},
+        wl_registry,
+    },
+    Dispatch, Proxy,
+};
+use wayland_protocols_wlr::output_management::v1::client::{
+    zwlr_output_head_v1::ZwlrOutputHeadV1, zwlr_output_manager_v1::ZwlrOutputManagerV1,
+    zwlr_output_mode_v1::ZwlrOutputModeV1,
+};
 
 fn parse_setup(arg: Vec<String>) -> Result<Vec<usize>> {
     if arg.is_empty() {
@@ -113,12 +126,158 @@ impl Ipc for SwayIPC {
 fn find_ipc() -> Result<Box<dyn Ipc>> {
     if let Ok(_) = std::env::var("SWAYSOCK") {
         Ok(Box::new(SwayIPC::new()?))
+    } else if let Ok(_) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
+        Ok(Box::new(HyprlandIpc::new()))
     } else {
         Err(anyhow::anyhow!("Couldn't find compositor. Make sure either SWAYSOCK or HYPRLAND_INSTANCE_SIGNATURE is set."))
     }
 }
 
+struct HyprlandIpc {}
+
+impl HyprlandIpc {
+    fn new() -> Self {
+        HyprlandIpc {}
+    }
+}
+
+impl Ipc for HyprlandIpc {
+    fn get_outputs(&mut self) -> Result<Vec<Output>> {
+        let monitors = hyprland::data::Monitors::get()?;
+        Ok(monitors
+            .into_iter()
+            .map(|monitor| Output {
+                name: monitor.name,
+                description: monitor.description,
+                current_resolution: Resolution {
+                    height: monitor.height as i32,
+                    width: monitor.width as i32,
+                },
+                preferred_resolution: Resolution {
+                    height: monitor.height as i32,
+                    width: monitor.width as i32,
+                },
+                position: Position {
+                    x: monitor.x,
+                    y: monitor.y,
+                },
+            })
+            .collect())
+    }
+
+    fn activate_output(&mut self, output: &Output, new_position: Option<Position>) -> Result<()> {
+        todo!()
+    }
+
+    fn disable_output(&mut self, output: &Output) -> Result<()> {
+        todo!()
+    }
+}
+
+impl wayland_client::Dispatch<WlOutput, ()> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &WlOutput,
+        event: <WlOutput as wayland_client::Proxy>::Event,
+        data: &(),
+        conn: &wayland_client::Connection,
+        qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        println!("Got output event {:?}", event);
+    }
+}
+
+#[derive(Debug)]
+struct State {
+    running: bool,
+}
+
+impl Dispatch<wl_registry::WlRegistry, ()> for State {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: <wl_registry::WlRegistry as wayland_client::Proxy>::Event,
+        data: &(),
+        conn: &wayland_client::Connection,
+        qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
+            if interface == "zwlr_output_manager_v1" {
+                println!("Binding output events.");
+                registry.bind::<ZwlrOutputManagerV1, _, _>(name, 1, qhandle, ());
+            } else {
+                println!("Ignoring interface {}", interface);
+            }
+        }
+    }
+}
+
+impl Dispatch<ZwlrOutputManagerV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrOutputManagerV1,
+        event: <ZwlrOutputManagerV1 as Proxy>::Event,
+        data: &(),
+        conn: &wayland_client::Connection,
+        qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        println!("Got output manager event {:?}", event);
+    }
+    event_created_child!(State, ZwlrOutputManagerV1, [
+        EVT_HEAD_OPCODE=> (ZwlrOutputHeadV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwlrOutputHeadV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrOutputHeadV1,
+        event: <ZwlrOutputHeadV1 as Proxy>::Event,
+        data: &(),
+        conn: &wayland_client::Connection,
+        qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        println!("Got head event {:?}", event);
+    }
+    event_created_child!(State, ZwlrOutputManagerV1, [
+        EVT_MODE_OPCODE => (ZwlrOutputModeV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwlrOutputModeV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrOutputModeV1,
+        event: <ZwlrOutputModeV1 as Proxy>::Event,
+        data: &(),
+        conn: &wayland_client::Connection,
+        qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        println!("Got mode event {:?}", event);
+    }
+}
+
 fn main() -> Result<()> {
+    let connection = wayland_client::Connection::connect_to_env()?;
+    // get outputs from connection
+    let display = connection.display();
+    let mut q = connection.new_event_queue::<State>();
+    let qh = q.handle();
+    let _registry = display.get_registry(&qh, ());
+
+    let mut state = State { running: true };
+    q.blocking_dispatch(&mut state)?;
+    q.blocking_dispatch(&mut state)?;
+
+    Ok(())
+}
+
+fn old_main() -> Result<()> {
     let args = std::env::args().collect::<Vec<String>>();
     let setup = parse_setup(args.into_iter().skip(1).collect())?;
 

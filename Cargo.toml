@@ -5,5 +5,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.79"
+hyprland = "0.3.13"
 interprocess = "1.2.1"
 swayipc = "3.0.2"
+wayland-client = "0.31.2"
+wayland-protocols = {version="0.31.2", features=["client", "unstable"]}
+wayland-protocols-wlr = {version="0.2.0", features=["client"]}
