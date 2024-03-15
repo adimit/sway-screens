@@ -1,11 +1,12 @@
+use std::{collections::HashMap, hash::BuildHasherDefault};
+
 use anyhow::Result;
+use fxhash::{FxHashMap, FxHasher};
 use hyprland::shared::HyprData;
 use wayland_client::{
+    backend::ObjectId,
     event_created_child,
-    protocol::{
-        wl_output::{self, WlOutput},
-        wl_registry,
-    },
+    protocol::{wl_output::WlOutput, wl_registry},
     Dispatch, Proxy,
 };
 use wayland_protocols_wlr::output_management::v1::client::{
@@ -190,6 +191,7 @@ impl wayland_client::Dispatch<WlOutput, ()> for State {
 #[derive(Debug)]
 struct State {
     running: bool,
+    outputs: HashMap<ObjectId, Output, BuildHasherDefault<FxHasher>>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
@@ -262,6 +264,8 @@ impl Dispatch<ZwlrOutputModeV1, ()> for State {
     }
 }
 
+type OutputHashMap = FxHashMap<ObjectId, Output>;
+
 fn main() -> Result<()> {
     let connection = wayland_client::Connection::connect_to_env()?;
     // get outputs from connection
@@ -270,7 +274,10 @@ fn main() -> Result<()> {
     let qh = q.handle();
     let _registry = display.get_registry(&qh, ());
 
-    let mut state = State { running: true };
+    let mut state = State {
+        running: true,
+        outputs: OutputHashMap::default(),
+    };
     q.blocking_dispatch(&mut state)?;
     q.blocking_dispatch(&mut state)?;
 
