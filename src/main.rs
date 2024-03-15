@@ -7,7 +7,7 @@ use wayland_client::{
     backend::ObjectId, event_created_child, protocol::wl_registry, Dispatch, Proxy,
 };
 use wayland_protocols_wlr::output_management::v1::client::{
-    zwlr_output_head_v1::ZwlrOutputHeadV1,
+    zwlr_output_head_v1::{ZwlrOutputHeadV1, EVT_MODE_OPCODE},
     zwlr_output_manager_v1::{ZwlrOutputManagerV1, EVT_HEAD_OPCODE},
     zwlr_output_mode_v1::ZwlrOutputModeV1,
 };
@@ -242,7 +242,7 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for OutputQueryState {
         }
     }
     event_created_child!(OutputQueryState, ZwlrOutputManagerV1, [
-        3 => (ZwlrOutputModeV1, ()),
+        EVT_MODE_OPCODE => (ZwlrOutputModeV1, ()),
     ]);
 }
 
