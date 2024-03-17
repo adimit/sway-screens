@@ -28,6 +28,14 @@ fn main() -> Result<()> {
         println!("{}: {}", i, output);
     }
 
+    if let Some(invalid_index) = setup.iter().find(|&index| index >= &outputs.len()) {
+        return Err(anyhow::anyhow!(
+            "Invalid screen index {}. Index can be at most {}.",
+            invalid_index,
+            outputs.len() - 1
+        ));
+    }
+
     if setup.len() > outputs.len() {
         return Err(anyhow::anyhow!(
             "Can't set {} outputs when we only have {}.",
