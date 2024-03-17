@@ -86,11 +86,11 @@ impl OutputManager for WlrOutputManager {
         let mut state = OutputQueryState {
             running: true,
             outputs: FxHashMap::default(),
-            capabilities: Vec::new(),
+            capabilities: Vec::default(),
             output_to_modes: FxHashMap::default(),
             modes: FxHashMap::default(),
             outputs_current_mode: FxHashMap::default(),
-            finalised_output: Vec::new(),
+            finalised_output: Vec::default(),
         };
         while state.running {
             q.blocking_dispatch(&mut state)?;

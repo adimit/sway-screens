@@ -1,4 +1,4 @@
-use crate::screens::{Mode, Position, Resolution};
+use crate::screens::Resolution;
 
 use super::OutputQueryState;
 use tracing::{debug, warn};
@@ -18,66 +18,63 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for OutputQueryState {
         _conn: &wayland_client::Connection,
         _qhandle: &wayland_client::QueueHandle<Self>,
     ) {
-        use wayland_protocols_wlr::output_management::v1::client::zwlr_output_head_v1::Event;
-        if let Event::Name { name } = event {
-            let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
-                output.name = name;
-            });
-            if new_output.is_none() {
-                warn!("Unknown head {:?}", proxy.id());
+        use wayland_protocols_wlr::output_management::v1::client::zwlr_output_head_v1::Event::*;
+        match event {
+            Name { name } => {
+                let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
+                    output.name = name;
+                });
+                if new_output.is_none() {
+                    warn!("Unknown head {:?}", proxy.id());
+                }
             }
-        } else if let Event::Enabled { enabled } = event {
-            let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
-                output.enabled = enabled == 1;
-            });
-            if new_output.is_none() {
-                warn!("Unknown head {:?}", proxy.id());
+            Description { description } => {
+                let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
+                    output.description = description;
+                });
+                if new_output.is_none() {
+                    warn!("Unknown head {:?}", proxy.id());
+                }
             }
-        } else if let Event::Description { description } = event {
-            let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
-                output.description = description;
-            });
-            if new_output.is_none() {
-                warn!("Unknown head {:?}", proxy.id());
+            Scale { scale } => {
+                let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
+                    output.scale = scale;
+                });
+                if new_output.is_none() {
+                    warn!("Unknown head {:?}", proxy.id());
+                }
             }
-        } else if let Event::Scale { scale } = event {
-            let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
-                output.scale = scale;
-            });
-            if new_output.is_none() {
-                warn!("Unknown head {:?}", proxy.id());
+            Position { x, y } => {
+                let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
+                    output.position = Some(super::Position { x, y });
+                });
+                if new_output.is_none() {
+                    warn!("Unknown head {:?}", proxy.id());
+                }
             }
-        } else if let Event::Position { x, y } = event {
-            let new_output = state.outputs.get_mut(&proxy.id()).map(|output| {
-                output.position = Some(Position { x, y });
-            });
-            if new_output.is_none() {
-                warn!("Unknown head {:?}", proxy.id());
-            }
-        } else if let Event::Mode { mode } = event {
-            state.modes.insert(
-                mode.id(),
-                Mode {
-                    resolution: Resolution {
-                        width: 0,
-                        height: 0,
+            Mode { mode } => {
+                state.modes.insert(
+                    mode.id(),
+                    super::Mode {
+                        resolution: Resolution {
+                            width: 0,
+                            height: 0,
+                        },
+                        refresh: 0,
+                        preferred: false,
                     },
-                    refresh: 0,
-                    preferred: false,
-                },
-            );
-            let new_mode = state.output_to_modes.get_mut(&proxy.id()).map(|modes| {
-                modes.push(mode.id());
-            });
-            if new_mode.is_none() {
-                warn!("Unknown head in mode assignment {:?}", proxy.id());
+                );
+                let new_mode = state.output_to_modes.get_mut(&proxy.id()).map(|modes| {
+                    modes.push(mode.id());
+                });
+                if new_mode.is_none() {
+                    warn!("Unknown head in mode assignment {:?}", proxy.id());
+                }
             }
-        } else if let Event::CurrentMode { mode } = event {
-            state.outputs_current_mode.insert(proxy.id(), mode.id());
-        } else {
-            debug!("Output head ignoring event {:?}", event);
-        }
+            _ => debug!("Output head ignoring event {:?}", event),
+        };
     }
+
     event_created_child!(OutputQueryState, ZwlrOutputManagerV1, [
         EVT_MODE_OPCODE => (ZwlrOutputModeV1, ()),
     ]);
